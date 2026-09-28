@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Jira sang Plane</title>
+  <style>
+    :root { color-scheme: light; }
+    body { margin: 0; font: 15px/1.45 ui-sans-serif, system-ui, sans-serif; background: #f4f5f7; color: #1c1e21; }
+    main { max-width: 1080px; margin: 0 auto; padding: 28px 20px 64px; }
+    h1 { font-size: 22px; margin: 0 0 6px; }
+    h2 { font-size: 16px; margin: 0 0 12px; }
+    p.lead { margin: 0 0 22px; color: #4b5160; }
+    section { background: #fff; border: 1px solid #e1e4ea; border-radius: 10px; padding: 16px 18px 18px; margin-bottom: 16px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    label { display: block; font-size: 13px; margin: 10px 0 4px; color: #3c4250; }
+    input, select, button { font: inherit; }
+    input, select { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #cfd3dc; border-radius: 8px; background: #fff; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+    button { border: 0; border-radius: 8px; padding: 8px 12px; background: #1f6feb; color: #fff; cursor: pointer; }
+    button.secondary { background: #eef1f6; color: #1c1e21; }
+    button:disabled { opacity: 0.55; cursor: default; }
+    .ok { color: #0f7b3a; }
+    .bad { color: #b42318; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eceff3; vertical-align: top; }
+    th { color: #5c6570; font-weight: 600; }
+    #log { white-space: pre-wrap; background: #111418; color: #e8edf2; border-radius: 8px; padding: 12px; min-height: 80px; font: 12px/1.5 ui-monospace, monospace; }
+    .note { color: #4b5160; font-size: 13px; }
+    .type-list { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 8px; }
+    .type-list label { display: flex; align-items: center; gap: 6px; margin: 0; }
+    .type-list input { width: auto; }
+    @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Migrate Jira sang Plane</h1>
+    <p class="lead">Điền kết nối, kéo một project Jira, chọn state cho từng status, rồi ghi sang Plane. Tool chỉ mở trên máy này.</p>
+
+    <section>
+      <h2>1. Kết nối</h2>
+      <div class="grid">
+        <div>
+          <h2>Jira</h2>
+          <label>Site URL</label>
+          <input id="jira_base_url" placeholder="https://ten-site.atlassian.net" />
+          <label>Email</label>
+          <input id="jira_email" />
+          <label>API token</label>
+          <input id="jira_api_token" type="password" />
+          <label>Project key</label>
+          <input id="jira_project_key" placeholder="SCRUM" />
+          <div class="actions">
+            <button type="button" class="secondary" id="test-jira">Kiểm tra Jira</button>
+          </div>
+          <p id="jira-result" class="note"></p>
+        </div>
+        <div>
+          <h2>Plane</h2>
+          <label>API URL</label>
+          <input id="plane_base_url" placeholder="https://plane.example.com" />
+          <label>API key</label>
+          <input id="plane_api_key" type="password" />
+          <label>Workspace slug</label>
+          <input id="plane_workspace_slug" />
+          <label>Project id</label>
+          <input id="plane_project_id" />
+          <div class="actions">
+            <button type="button" class="secondary" id="test-plane">Kiểm tra Plane</button>
+          </div>
+          <p id="plane-result" class="note"></p>
+        </div>
+      </div>
+      <div class="actions">
+        <button type="button" id="save-config">Lưu cấu hình</button>
+      </div>
+      <p id="save-result" class="note"></p>
+    </section>
+
+    <section>
+      <h2>2. Dữ liệu Jira</h2>
+      <p class="note">Epic thành Module. Story, Task, Bug thành work item trong module của Epic. Sub-task thành work item con. Story point, ngày tạo và ngày sửa trên Jira được ghi vào mô tả vì Plane không nhận các mốc thời gian gốc.</p>
+      <div class="actions">
+        <button type="button" id="pull">Kéo project</button>
+      </div>
+      <p id="pull-result" class="note"></p>
+      <div id="type-picker"></div>
+      <div id="issue-table"></div>
+    </section>
+
+    <section>
+      <h2>3. Mapping status</h2>
+      <div id="mapping"></div>
+    </section>
+
+    <section>
+      <h2>4. Ghi sang Plane</h2>
+      <div class="actions">
+        <button type="button" class="secondary" id="preview">Xem trước</button>
+        <button type="button" id="migrate">Migrate lên Plane</button>
+      </div>
+      <div id="log"></div>
+    </section>
+  </main>
+  <script>
+    const fields = [
+      "jira_base_url", "jira_email", "jira_api_token", "jira_project_key",
+      "plane_base_url", "plane_api_key", "plane_workspace_slug", "plane_project_id"
+    ];
+
+    function configFromForm() {
+      const payload = {};
+      fields.forEach((id) => { payload[id] = document.getElementById(id).value.trim(); });
+      return payload;
+    }
+
+    function fillForm(config) {
+      fields.forEach((id) => {
+        if (config[id]) document.getElementById(id).value = config[id];
+      });
+    }
+
+    async function api(path, options) {
+      const response = await fetch(path, options);
+      const payload = await response.json();
+      if (!response.ok && response.status !== 202) {
+        throw new Error(payload.error || response.statusText);
+      }
+      return payload;
+    }
+
+    function setNote(id, text, ok) {
+      const node = document.getElementById(id);
+      node.textContent = text;
+      node.className = ok ? "ok" : "bad";
+    }
+
+    async function saveConfig() {
+      await api("/api/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(configFromForm())
+      });
+      setNote("save-result", "Đã lưu trên máy này.", true);
+    }
+
+    document.getElementById("save-config").onclick = () => saveConfig().catch((error) => setNote("save-result", error.message, false));
+
+    document.getElementById("test-jira").onclick = async () => {
+      try {
+        await saveConfig();
+        const result = await api("/api/test/jira", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+        setNote("jira-result", result.account + " · " + result.project_key + " " + result.project_name, true);
+      } catch (error) {
+        setNote("jira-result", error.message, false);
+      }
+    };
+
+    document.getElementById("test-plane").onclick = async () => {
+      try {
+        await saveConfig();
+        const result = await api("/api/test/plane", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+        setNote("plane-result", result.account + " · " + result.project_name, true);
+      } catch (error) {
+        setNote("plane-result", error.message, false);
+      }
+    };
+
+    function esc(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[ch]));
+    }
+
+    function renderTypes(issues) {
+      const host = document.getElementById("type-picker");
+      const counts = {};
+      issues.forEach((issue) => {
+        const name = issue.type || "Không rõ loại";
+        counts[name] = (counts[name] || 0) + 1;
+      });
+      const names = Object.keys(counts).sort((a, b) => a.localeCompare(b));
+      if (!names.length) {
+        host.innerHTML = "";
+        return;
+      }
+      const boxes = names.map((name) => {
+        const checked = name.trim().toLowerCase() === "bug" ? "" : "checked";
+        return `<label><input type="checkbox" data-type="${esc(name)}" ${checked} /> ${esc(name)} (${counts[name]})</label>`;
+      }).join("");
+      host.innerHTML = `<p class="note">Chọn loại sẽ ghi sang Plane. Loại tên Bug được bỏ chọn sẵn. Sub-task của loại bị bỏ cũng không được ghi.</p><div class="type-list">${boxes}</div>`;
+    }
+
+    function selectedTypes() {
+      return [...document.querySelectorAll("#type-picker input:checked")].map((input) => input.dataset.type);
+    }
+
+    function renderIssues(issues) {
+      const host = document.getElementById("issue-table");
+      if (!issues.length) {
+        host.innerHTML = "";
+        return;
+      }
+      const rows = issues.map((issue) => `
+        <tr>
+          <td>${esc(issue.key)}</td>
+          <td>${esc(issue.type)}${issue.epic ? " → module" : ""}</td>
+          <td>${esc(issue.status)}</td>
+          <td>${esc(issue.summary)}</td>
+          <td>${esc(issue.parent)}</td>
+          <td>${esc(issue.points)}</td>
+          <td>${esc(issue.comments)}</td>
+        </tr>`).join("");
+      host.innerHTML = `<table>
+        <thead><tr><th>Key</th><th>Loại</th><th>Status</th><th>Tên</th><th>Parent</th><th>Point</th><th>Comment</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+    }
+
+    function renderMapping(statuses, states, suggested) {
+      const host = document.getElementById("mapping");
+      if (!statuses.length) {
+        host.innerHTML = "<p class='note'>Kéo project để thấy status.</p>";
+        return;
+      }
+      const options = states.map((state) => `<option value="${esc(state.id)}">${esc(state.name)}</option>`).join("");
+      host.innerHTML = statuses.map((status) => `
+        <label>${esc(status)}</label>
+        <select data-status="${esc(status)}">
+          <option value="">Chọn state Plane</option>
+          ${options}
+        </select>`).join("");
+      host.querySelectorAll("select").forEach((select) => {
+        select.value = suggested[select.dataset.status] || "";
+      });
+    }
+
+    function statusMap() {
+      const mapping = {};
+      document.querySelectorAll("#mapping select").forEach((select) => {
+        mapping[select.dataset.status] = select.value;
+      });
+      return mapping;
+    }
+
+    document.getElementById("pull").onclick = async () => {
+      try {
+        await saveConfig();
+        setNote("pull-result", "Đang kéo...", true);
+        const result = await api("/api/pull", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+        setNote("pull-result", result.total + " issue từ " + result.project_key, true);
+        renderTypes(result.issues);
+        renderIssues(result.issues);
+        renderMapping(result.statuses, result.plane_states, result.suggested_status_map);
+      } catch (error) {
+        setNote("pull-result", error.message, false);
+      }
+    };
+
+    async function runMigrate(dryRun) {
+      const issueTypes = selectedTypes();
+      if (!issueTypes.length) throw new Error("Chưa chọn loại issue nào.");
+      await saveConfig();
+      await api("/api/migrate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dry_run: dryRun, status_map: statusMap(), issue_types: issueTypes })
+      });
+      const log = document.getElementById("log");
+      const timer = setInterval(async () => {
+        const state = await api("/api/job");
+        log.textContent = state.lines.join("\n");
+        if (!state.running) clearInterval(timer);
+      }, 700);
+    }
+
+    document.getElementById("preview").onclick = () => runMigrate(true).catch((error) => {
+      document.getElementById("log").textContent = error.message;
+    });
+    document.getElementById("migrate").onclick = () => {
+      const chosen = selectedTypes();
+      if (!chosen.length) {
+        document.getElementById("log").textContent = "Chưa chọn loại issue nào.";
+        return;
+      }
+      if (!confirm("Ghi các loại đã chọn lên Plane: " + chosen.join(", ") + "?")) return;
+      runMigrate(false).catch((error) => {
+        document.getElementById("log").textContent = error.message;
+      });
+    };
+
+    api("/api/config").then(fillForm);
+    api("/api/snapshot").then((snapshot) => {
+      if (!snapshot.issues || !snapshot.issues.length) return;
+      renderTypes(snapshot.issues);
+      renderIssues(snapshot.issues);
+      renderMapping(snapshot.statuses, snapshot.plane_states, snapshot.suggested_status_map);
+      setNote("pull-result", snapshot.issues.length + " issue đã kéo từ " + snapshot.project_key, true);
+    }).catch(() => {});
+  </script>
+</body>
+</html>
